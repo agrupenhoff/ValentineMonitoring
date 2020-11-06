@@ -1,0 +1,162 @@
+---
+title: "Valentine_data"
+author: "Ashley Grupenhoff"
+date: "11/4/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+  library(tinytex)
+          options(tinytex.verbose=TRUE)
+library(tibble)
+library(dplyr)
+library(ggplot2)
+library(vegan)
+library(knitr)
+library(kableExtra)
+library(rio)
+library(lme4)
+library(wesanderson)
+```
+
+
+> Overall stand data
+
+```{r}
+val_trees <- import("C:/Users/ashle/Documents/R/Valentine/data/raw/Trees_2020.csv")
+
+plotid <- val_trees$PlotID
+length(unique(plotid))
+
+```
+
+> Fine fuels
+
+```{r}
+
+Val_CWD <- read.csv("C:/Users/ashle/Documents/R/Valentine/data/raw/CWD_2019.csv", stringsAsFactors = FALSE)
+Val_FWD <- read.csv("C:/Users/ashle/Documents/R/Valentine/data/raw/FineFuels_2019.csv", stringsAsFactors=FALSE)
+                 Val_FWD <- Val_FWD %>% 
+                     mutate_at(vars(count_x1h, count_x10h, count_x100h, duff1_cm, duff2_cm, litter1_cm, litter2_cm, slope_percent, fuel1_cm, fuel2_cm), ~as.numeric(as.character(.)))
+
+
+#change rows with no CWD (written as na, no cwd, or none) to include NA then replace with 0
+
+Val_CWD$intersect_cm <- as.numeric(Val_CWD$intersect_cm) 
+
+
+
+#sum CWD values 
+
+Val_CWD_sum <- Val_CWD %>% 
+                            mutate( decay_type = case_when(
+                            decay >= 4  ~ "rotten",
+                            decay < 4 ~ "sound"
+                          )) %>% 
+                      mutate(site_plotid_time_azimuth = paste(site, plot_id, year, pre_post_fire, azimuth)) %>% 
+                      mutate(diam_in_square = (intersect_cm * 0.3937)^2) %>% 
+                      group_by(site_plotid_time_azimuth, decay_type) %>% 
+                      summarise(sum_diam = sum(diam_in_square)) %>% 
+                      replace_na(list(rotten =0, sound =0)) 
+
+
+
+
+Val_CWD_sum <- Val_CWD_sum %>% 
+  pivot_wider(names_from="decay_type", values_from = "sum_diam") 
+
+Val_CWD_complete <- Val_CWD_sum %>% 
+    replace_na(list(sound=0, rotten=0))
+
+# FINE FUELS: average litter, duff, fuel depth && slope correction
+Val_FWD_slope <- Val_FWD%>% 
+                   mutate( avg_duff = (duff1_cm + duff2_cm)/2,
+                          avg_litter = (litter1_cm +litter2_cm)/2,
+                          avg_fueldepth = (fuel1_cm + fuel2_cm)/2) %>% 
+                  replace_na(list(slope_percent=0)) %>% 
+                  mutate(slopecorrection = (1+(slope_percent/100)^2)^(1/2)) %>% 
+                  mutate(site_plotid_time_azimuth = paste(site, plotid, year, pre_post_fire, azimuth))
+                  
+#compile FWD and CWD together
+Val_Fuels <- left_join(Val_CWD_complete,Val_FWD_slope, by="site_plotid_time_azimuth")
+
+
+
+#Calculate Mass for FWD
+
+Val_FWD_Mass <- Val_FWD_slope %>% 
+      mutate(mass_1hr =(11.64 * count_x1h * 0.0151 * 	0.48 * 1.13 * slopecorrection)/ (2*3.28),
+             mass_10hr=(11.64 * count_x10h * 0.289 * 	0.48 * 1.13 * slopecorrection) / (2*3.28),
+             mass_100hr=(11.64 * count_x100h * 2.76 * 	0.40 * 1.13 * slopecorrection) / (4*3.28)) %>% 
+      select(site_plotid_time_azimuth, mass_1hr, mass_10hr, mass_100hr, slopecorrection, avg_litter, avg_duff, avg_fueldepth)
+
+#Combine CWD and FWD mass 
+Val_CWD_FWD_combine <- left_join(Val_FWD_Mass, Val_CWD_complete, by="site_plotid_time_azimuth")
+  
+
+#Now calculate CWD mass with joined slope percent
+Val_CWD_FWD_combine <- Val_CWD_FWD_combine %>% 
+  replace_na(list(sound=0, rotten=0)) %>% 
+  mutate(mass_cwd_sound =(11.64 * sound * 0.155 * 0.40 * slopecorrection) / (11.3*3.28),
+         mass_cwd_rotten=(11.64 * rotten * 0.155 * 0.30 * slopecorrection) / (11.3*3.28)) %>%  
+  separate(site_plotid_time_azimuth, c("site","plotid","year", "pre_post_fire","azimuth"), sep=" ") 
+  
+#average per plot
+
+Val_CWD_FWD_plot <- Val_CWD_FWD_combine %>% 
+  mutate(site_plotid_time = paste(site, plotid, year, pre_post_fire)) %>% 
+  select(site_plotid_time, mass_1hr, mass_10hr, mass_100hr, mass_cwd_sound, mass_cwd_rotten, avg_litter, avg_duff, avg_fueldepth) %>% 
+  group_by(site_plotid_time) %>% 
+    summarise_all(mean, na.rm=TRUE) 
+   
+
+
+Val_CWD_FWD_plot <- Val_CWD_FWD_plot %>% 
+                     group_by(site_plotid_time) %>% 
+                    mutate(total_fuel = sum(mass_1hr,mass_10hr,mass_100hr,mass_cwd_sound, mass_cwd_rotten)) %>% 
+                    pivot_longer(cols = -site_plotid_time, names_to = "fuel_type_size", values_to= "mass_ton_acre") %>% 
+                    
+        
+                 
+                   
+                    
+                  
+
+#add column for Mg_Ha 
+
+Val_CWD_FWD_plot <- Val_CWD_FWD_plot %>% 
+  mutate(mass_mg_ha = (mass_ton_acre*0.446)) %>% 
+  separate(site_plotid_time, c("site","plotid","year", "pre_post_fire"), sep=" ") 
+
+  
+
+#save completed post fuels data frame
+export(Val_CWD_FWD_plot, "C:/Users/ashle/Documents/R/Valentine/data/clean/FuelsAll_2020.csv")
+
+
+```
+
+
+
+> Sum fuels!
+
+```{r}
+
+Val_Fuels <- import("C:/Users/ashle/Documents/R/Valentine/data/clean/FuelsAll_2020.csv")
+summarise(Val_Fuels)
+
+Val_Fuels_Sum <- Val_Fuels %>% 
+  group_by(fuel_type_size) %>% 
+  summarize(stand_mean = mean(mass_mg_ha, na.rm=TRUE))
+
+mean(Val_Fuels$mass_mg_ha)
+
+```
+
+
+
+
+
+
